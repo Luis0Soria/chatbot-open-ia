@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
+const cosineSimilarity = require('cosine-similarity');
 const app = express();
 
 app.use(express.json());
@@ -107,6 +108,25 @@ async function getRecentPosts() {
     }
 }
 
+async function getEmbedding(text) {
+    const url = 'https://api.openai.com/v1/embeddings';
+    const headers = {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+    };
+    const data = {
+        model: "text-embedding-ada-002",
+        input: text
+    };
+    try {
+        const response = await axios.post(url, data, { headers });
+        return response.data.data[0].embedding;
+    } catch (err) {
+        console.error("Error obteniendo embedding:", err.response?.data || err.message);
+        return null;
+    }
+}
+
 async function getOpenAIResponse(userMessage, promptExtra = '', canal = 'page') {
     // Lee información fija desde el archivo conocimientos.txt
     let infoFija = '';
@@ -118,9 +138,27 @@ async function getOpenAIResponse(userMessage, promptExtra = '', canal = 'page') 
     // Obtiene los 10 posteos más recientes
     const posts = await getRecentPosts();
     let context = "";
+    let postSeleccionado = null;
     if (posts.length > 0) {
-        context = `Estos son los 10 posteos más recientes de la página de Facebook. Si el usuario pregunta sobre alguno de estos posteos, responde usando la información del post correspondiente. Si no entiendes a qué publicación se refiere, pide al usuario que aclare o especifique el número del post:
-${posts.map((p, i) => `${i+1}. ${p}`).join("\n")}\n\n`;
+        // Calcula el embedding de la pregunta del usuario
+        const userEmbedding = await getEmbedding(userMessage);
+        // Calcula el embedding de cada post y busca el más similar
+        let maxSim = -1;
+        for (const post of posts) {
+            const postEmbedding = await getEmbedding(post);
+            if (userEmbedding && postEmbedding) {
+                const sim = cosineSimilarity(userEmbedding, postEmbedding);
+                if (sim > maxSim) {
+                    maxSim = sim;
+                    postSeleccionado = post;
+                }
+            }
+        }
+        if (postSeleccionado) {
+            context = `Este es el posteo más relevante de la página de Facebook según tu pregunta:\n${postSeleccionado}\n\n`;
+        } else {
+            context = '';
+        }
     }
     // Personalizar el contexto según el canal
     let prompt = infoFija + context + promptExtra + "\nUsuario: " + userMessage;
